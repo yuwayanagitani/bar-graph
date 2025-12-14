@@ -1,0 +1,12 @@
+{
+  "name": "Bar Graph (Last 30 Days)",
+  "package": "bar_graph",
+  "author": "Yuwa Yanagitani",
+  "version": "0.1.0",
+  "anki_version": "24.0",
+  "description": "Display a lightweight 30-day review history bar graph directly on the Decks screen.",
+  "homepage": "https://github.com/yuwa-yanagitani/bar-graph-last30",
+  "tags": ["statistics", "visualization", "productivity"],
+  "conflicts": [],
+  "mod": false
+}
