@@ -2,7 +2,7 @@
   "name": "anki-bar-graph",
   "title": "Anki Bar Graph",
   "description": "Anki add-on that shows bar graphs for review statistics",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "author": "Yuwa Yanagitani",
   "min_point_release": "23.10.0",
   "max_point_release": null,
