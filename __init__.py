@@ -529,7 +529,7 @@ def _install_hooks() -> None:
 class ConfigDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Bar Graph (Last 30 Days) - Settings")
+        self.setWindowTitle("Bar Graph - Settings")
         self.setMinimumWidth(720)
 
         self._conf = _get_config_merged()
