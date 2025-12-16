@@ -52,6 +52,9 @@ def _defaults() -> dict[str, Any]:
         "goal_per_day": 200,          # 目標（1日あたりのレビュー回数/学習量の目安）
         "show_goal_line": True,       # 目標線を表示するか
 
+        # Range
+        "range_days": 30,            # 7 / 30 / 90 / 180 / 365 推奨
+
         # Layout
         "chart_height_px": 140,
         "chart_width_vw": 75,         # 例: 75 => 75vw
@@ -145,13 +148,17 @@ def _today_key() -> str:
     return datetime.now().date().isoformat()
 
 
-def _compute_last_30_days_counts() -> List[int]:
-    """直近30日（今日含む）のrevlog行数を日別に集計（軽量）。"""
+def _compute_last_n_days_counts(days: int) -> List[int]:
+    """直近N日（今日含む）のrevlog行数を日別に集計（DBでgroup byして軽量化）。"""
     if not mw.col:
-        return [0] * 30
+        return [0] * max(1, days)
+
+    days = int(days)
+    if days < 1:
+        days = 1
 
     today = datetime.now().date()
-    start_day = today - timedelta(days=29)
+    start_day = today - timedelta(days=days - 1)
 
     start_dt = datetime.combine(start_day, datetime.min.time())
     end_dt = datetime.combine(today + timedelta(days=1), datetime.min.time())
@@ -159,39 +166,57 @@ def _compute_last_30_days_counts() -> List[int]:
     start_ms = int(start_dt.timestamp() * 1000)
     end_ms = int(end_dt.timestamp() * 1000) - 1
 
-    rows = mw.col.db.all("SELECT id FROM revlog WHERE id BETWEEN ? AND ?", start_ms, end_ms)
+    # day_key: Unix ms -> 日単位に丸めたキー（UTC基準のズレは「日別傾向」用途なら許容）
+    # もし「ローカル日付」厳密が必要なら、オフセット補正を入れる（通常は不要）。
+    rows = mw.col.db.all(
+        """
+        SELECT (id / 86400000) AS day_key, COUNT(*) AS cnt
+        FROM revlog
+        WHERE id BETWEEN ? AND ?
+        GROUP BY day_key
+        """,
+        start_ms, end_ms,
+    )
 
-    counts = [0] * 30
-    for (rid,) in rows:
+    counts = [0] * days
+    start_key = start_ms // 86400000
+
+    for day_key, cnt in rows:
         try:
-            d = datetime.fromtimestamp(int(rid) / 1000).date()
+            idx = int(day_key) - int(start_key)
         except Exception:
             continue
-        if d < start_day or d > today:
-            continue
-        idx = (d - start_day).days
-        if 0 <= idx < 30:
-            counts[idx] += 1
+        if 0 <= idx < days:
+            try:
+                counts[idx] = int(cnt)
+            except Exception:
+                counts[idx] = 0
 
     return counts
 
 
 def _get_cached_counts(force: bool = False) -> List[int]:
     if not bool(_cfg("enabled", True)):
-        return [0] * 30
+        return [0] * int(_cfg("range_days", 30) or 30)
+
+    days = int(_cfg("range_days", 30) or 30)
+    if days < 1:
+        days = 1
 
     c = _get_conf()
-    cache_day = str(c.get("cache_day", ""))
+    cache_key = str(c.get("cache_key", ""))
     cache_counts = c.get("cache_counts")
 
-    if (not force) and cache_day == _today_key() and isinstance(cache_counts, list) and len(cache_counts) == 30:
+    key_now = f"{_today_key()}:{days}"
+
+    if (not force) and cache_key == key_now and isinstance(cache_counts, list) and len(cache_counts) == days:
         try:
             return [int(x) for x in cache_counts]
         except Exception:
             pass
 
-    counts = _compute_last_30_days_counts()
-    c["cache_day"] = _today_key()
+    counts = _compute_last_n_days_counts(days)
+    c["cache_key"] = key_now
     c["cache_counts"] = counts
     _write_conf(c)
     return counts
@@ -202,7 +227,8 @@ def _get_cached_counts(force: bool = False) -> List[int]:
 def _render_bar_chart_html(counts: List[int]) -> str:
     conf = _get_config_merged()
 
-    counts = (counts + [0] * 30)[:30]
+    days = max(1, int(conf.get("range_days", 30) or 30))
+    counts = (counts + [0] * days)[:days]
     maxv = max(counts) if counts else 0
 
     chart_h = int(conf.get("chart_height_px", 140))
@@ -219,10 +245,10 @@ def _render_bar_chart_html(counts: List[int]) -> str:
     midv = int(round(scale_max / 2))
 
     total = sum(counts)
-    title = f"Last 30 days: {total} reviews"
+    title = f"Last {days} days: {total} reviews"
 
     today = datetime.now().date()
-    start_day = today - timedelta(days=29)
+    start_day = today - timedelta(days=days - 1)
 
     def h(v: int) -> int:
         return max(1, int(chart_h * (v / scale_max))) if scale_max > 0 else 1
@@ -233,7 +259,7 @@ def _render_bar_chart_html(counts: List[int]) -> str:
         cls = "lm-bar"
         if goal > 0 and v >= goal:
             cls += " lm-goalmet"
-        if i == 29:
+        if i == (days - 1):
             cls += " lm-today"
         bars.append(
             f"<div class='{cls}' data-date='{d}' data-count='{v}' style='height:{h(v)}px;'></div>"
@@ -429,7 +455,7 @@ def _render_bar_chart_html(counts: List[int]) -> str:
 
   function recompute() {{
     const w = chart.clientWidth;
-    const n = 30;
+    const n = {days};
     const gap = {bar_gap};
     const totalGap = gap * (n - 1);
 
@@ -537,6 +563,19 @@ class ConfigDialog(QDialog):
         self.goal_line_cb = QCheckBox()
         self.goal_line_cb.setChecked(bool(self._conf.get("show_goal_line", True)))
         form_g.addRow("Show goal line", self.goal_line_cb)
+
+        self.range_combo = QComboBox()
+        self.range_combo.addItem("7 days", 7)
+        self.range_combo.addItem("30 days", 30)
+        self.range_combo.addItem("3 months (90 days)", 90)
+        self.range_combo.addItem("6 months (180 days)", 180)
+        self.range_combo.addItem("1 year (365 days)", 365)
+
+        cur_days = int(self._conf.get("range_days", 30) or 30)
+        i = self.range_combo.findData(cur_days)
+        self.range_combo.setCurrentIndex(i if i >= 0 else 1)  # default 30
+
+        form_g.addRow("Range", self.range_combo)
 
         gl.addWidget(box_general)
         gl.addStretch(1)
@@ -677,6 +716,7 @@ class ConfigDialog(QDialog):
         self.enabled_cb.setChecked(bool(d["enabled"]))
         self.goal_spin.setValue(int(d["goal_per_day"]))
         self.goal_line_cb.setChecked(bool(d["show_goal_line"]))
+        self.range_combo.setCurrentIndex(self.range_combo.findData(int(d.get("range_days", 30))))
 
         self.height_spin.setValue(int(d["chart_height_px"]))
         self.width_vw_spin.setValue(int(d["chart_width_vw"]))
@@ -705,6 +745,7 @@ class ConfigDialog(QDialog):
         c["enabled"] = bool(self.enabled_cb.isChecked())
         c["goal_per_day"] = int(self.goal_spin.value())
         c["show_goal_line"] = bool(self.goal_line_cb.isChecked())
+        c["range_days"] = int(self.range_combo.currentData() or 30)
 
         c["chart_height_px"] = int(self.height_spin.value())
         c["chart_width_vw"] = int(self.width_vw_spin.value())
