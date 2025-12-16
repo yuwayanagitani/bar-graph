@@ -527,6 +527,99 @@ def _install_hooks() -> None:
 # -------------------- custom config GUI (no Tools button) --------------------
 
 class ConfigDialog(QDialog):
+    class RGBAPickerRow(QWidget):
+        """
+        RGBA picker row:
+        - Pick… button (QColorDialog) for RGB
+        - Alpha (%) spin for A
+        - Preview swatch
+        - Hidden QLineEdit that stores rgba(r,g,b,a) for backward-compatible save logic
+        """
+        def __init__(self, label: str, rgba_text: str, parent=None) -> None:
+            super().__init__(parent)
+
+            self._rgb = QColor(120, 160, 235)
+            self._alpha_pct = 55
+
+            lay = QHBoxLayout(self)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(8)
+
+            self.pick_btn = QPushButton("Pick…")
+            self.pick_btn.setFixedWidth(90)
+
+            self.preview = QLabel()
+            self.preview.setFixedSize(44, 20)
+            self.preview.setFrameShape(QFrame.Shape.StyledPanel)
+
+            self.alpha_spin = QSpinBox()
+            self.alpha_spin.setRange(0, 100)
+            self.alpha_spin.setFixedWidth(80)
+            self.alpha_spin.setSuffix("%")
+
+            self.hidden_le = QLineEdit()
+            self.hidden_le.setVisible(False)
+
+            lay.addWidget(self.pick_btn)
+            lay.addWidget(self.preview)
+            lay.addWidget(QLabel("Alpha"))
+            lay.addWidget(self.alpha_spin)
+            lay.addStretch(1)
+            lay.addWidget(self.hidden_le)
+
+            self.set_rgba_text(rgba_text)
+
+            self.pick_btn.clicked.connect(self._pick_rgb)
+            self.alpha_spin.valueChanged.connect(lambda _v: self._sync_to_text())
+
+        @staticmethod
+        def _parse_rgba(s: str) -> tuple[QColor, int]:
+            # rgba(r,g,b,a) where a is 0..1
+            t = (s or "").strip()
+            import re
+            m = re.match(r"rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([0-9.]+)\s*\)$", t)
+            if m:
+                r, g, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                a = float(m.group(4))
+                a = max(0.0, min(1.0, a))
+                a_pct = int(round(a * 100))
+                return QColor(r, g, b), a_pct
+            return QColor(120, 160, 235), 55
+
+        @staticmethod
+        def _fmt_rgba(c: QColor, a_pct: int) -> str:
+            a = max(0.0, min(1.0, a_pct / 100.0))
+            return f"rgba({c.red()},{c.green()},{c.blue()},{a:.2f})"
+
+        def _set_preview(self) -> None:
+            c = QColor(self._rgb)
+            alpha = int(round(255 * (self._alpha_pct / 100.0)))
+            c.setAlpha(alpha)
+            # HexArgb: #AARRGGBB
+            self.preview.setStyleSheet(f"background-color: {c.name(QColor.NameFormat.HexArgb)};")
+
+        def _sync_to_text(self) -> None:
+            self._alpha_pct = int(self.alpha_spin.value())
+            self.hidden_le.setText(self._fmt_rgba(self._rgb, self._alpha_pct))
+            self._set_preview()
+
+        def _pick_rgb(self) -> None:
+            col = QColorDialog.getColor(self._rgb, self, "Pick Color")
+            if not col.isValid():
+                return
+            self._rgb = QColor(col.red(), col.green(), col.blue())
+            self._sync_to_text()
+
+        def set_rgba_text(self, rgba_text: str) -> None:
+            self._rgb, self._alpha_pct = self._parse_rgba(rgba_text)
+            self.alpha_spin.setValue(self._alpha_pct)
+            self.hidden_le.setText(self._fmt_rgba(self._rgb, self._alpha_pct))
+            self._set_preview()
+
+        def rgba_text(self) -> str:
+            return str(self.hidden_le.text()).strip()
+
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Bar Graph - Settings")
@@ -658,39 +751,59 @@ class ConfigDialog(QDialog):
         cl.setContentsMargins(12, 12, 12, 12)
         cl.setSpacing(12)
 
-        box_colors = QGroupBox("Colors (RGBA)")
+        box_colors = QGroupBox("Colors")
         form_c = QFormLayout(box_colors)
         form_c.setVerticalSpacing(10)
 
-        def _line_edit(val: str) -> QLineEdit:
-            le = QLineEdit()
-            le.setText(val)
-            le.setPlaceholderText("e.g. rgba(127,127,127,0.65)")
-            return le
+        dft = _defaults()
 
-        self.bar_rgba_le = _line_edit(str(self._conf.get("bar_rgba", _defaults()["bar_rgba"])))
-        form_c.addRow("Bar color", self.bar_rgba_le)
+        self.bar_picker = ConfigDialog.RGBAPickerRow(
+            "Bar color",
+            str(self._conf.get("bar_rgba", dft["bar_rgba"])),
+        )
+        form_c.addRow("Bar color", self.bar_picker)
 
-        self.today_rgba_le = _line_edit(str(self._conf.get("today_bar_rgba", _defaults()["today_bar_rgba"])))
-        form_c.addRow("Today bar color", self.today_rgba_le)
+        self.today_picker = ConfigDialog.RGBAPickerRow(
+            "Today bar color",
+            str(self._conf.get("today_bar_rgba", dft["today_bar_rgba"])),
+        )
+        form_c.addRow("Today bar color", self.today_picker)
 
-        self.goal_rgba_le = _line_edit(str(self._conf.get("goal_line_rgba", _defaults()["goal_line_rgba"])))
-        form_c.addRow("Goal line color", self.goal_rgba_le)
+        self.goal_line_picker = ConfigDialog.RGBAPickerRow(
+            "Goal line color",
+            str(self._conf.get("goal_line_rgba", dft["goal_line_rgba"])),
+        )
+        form_c.addRow("Goal line color", self.goal_line_picker)
 
-        self.tick_rgba_le = _line_edit(str(self._conf.get("tick_rgba", _defaults()["tick_rgba"])))
-        form_c.addRow("Tick line color", self.tick_rgba_le)
+        self.tick_picker = ConfigDialog.RGBAPickerRow(
+            "Tick line color",
+            str(self._conf.get("tick_rgba", dft["tick_rgba"])),
+        )
+        form_c.addRow("Tick line color", self.tick_picker)
 
-        self.goalmet_rgba_le = _line_edit(str(self._conf.get("goal_met_bar_rgba", _defaults()["goal_met_bar_rgba"])))
-        form_c.addRow("Goal-met bar color", self.goalmet_rgba_le)
+        self.goalmet_picker = ConfigDialog.RGBAPickerRow(
+            "Goal-met bar color",
+            str(self._conf.get("goal_met_bar_rgba", dft["goal_met_bar_rgba"])),
+        )
+        form_c.addRow("Goal-met bar color", self.goalmet_picker)
 
-        self.goalmet_outline_rgba_le = _line_edit(str(self._conf.get("goal_met_outline_rgba", _defaults()["goal_met_outline_rgba"])))
-        form_c.addRow("Goal-met outline", self.goalmet_outline_rgba_le)
+        self.goalmet_outline_picker = ConfigDialog.RGBAPickerRow(
+            "Goal-met outline",
+            str(self._conf.get("goal_met_outline_rgba", dft["goal_met_outline_rgba"])),
+        )
+        form_c.addRow("Goal-met outline", self.goalmet_outline_picker)
 
-        self.today_goal_rgba_le = _line_edit(str(self._conf.get("today_goal_bar_rgba", _defaults()["today_goal_bar_rgba"])))
-        form_c.addRow("Today + Goal bar color", self.today_goal_rgba_le)
+        self.today_goal_picker = ConfigDialog.RGBAPickerRow(
+            "Today + Goal bar color",
+            str(self._conf.get("today_goal_bar_rgba", dft["today_goal_bar_rgba"])),
+        )
+        form_c.addRow("Today + Goal bar color", self.today_goal_picker)
 
-        self.today_goal_outline_rgba_le = _line_edit(str(self._conf.get("today_goal_outline_rgba", _defaults()["today_goal_outline_rgba"])))
-        form_c.addRow("Today + Goal outline", self.today_goal_outline_rgba_le)
+        self.today_goal_outline_picker = ConfigDialog.RGBAPickerRow(
+            "Today + Goal outline",
+            str(self._conf.get("today_goal_outline_rgba", dft["today_goal_outline_rgba"])),
+        )
+        form_c.addRow("Today + Goal outline", self.today_goal_outline_picker)
 
         cl.addWidget(box_colors)
         cl.addStretch(1)
@@ -738,16 +851,16 @@ class ConfigDialog(QDialog):
         self.bmin_spin.setValue(int(d["bar_min_px"]))
         self.bmax_spin.setValue(int(d["bar_max_px"]))
 
-        self.bar_rgba_le.setText(str(d["bar_rgba"]))
-        self.today_rgba_le.setText(str(d["today_bar_rgba"]))
-        self.goal_rgba_le.setText(str(d["goal_line_rgba"]))
-        self.tick_rgba_le.setText(str(d["tick_rgba"]))
+        self.bar_picker.set_rgba_text(str(d["bar_rgba"]))
+        self.today_picker.set_rgba_text(str(d["today_bar_rgba"]))
+        self.goal_line_picker.set_rgba_text(str(d["goal_line_rgba"]))
+        self.tick_picker.set_rgba_text(str(d["tick_rgba"]))
 
-        self.goalmet_rgba_le.setText(str(d["goal_met_bar_rgba"]))
-        self.goalmet_outline_rgba_le.setText(str(d["goal_met_outline_rgba"]))
+        self.goalmet_picker.set_rgba_text(str(d["goal_met_bar_rgba"]))
+        self.goalmet_outline_picker.set_rgba_text(str(d["goal_met_outline_rgba"]))
 
-        self.today_goal_rgba_le.setText(str(d["today_goal_bar_rgba"]))
-        self.today_goal_outline_rgba_le.setText(str(d["today_goal_outline_rgba"]))
+        self.today_goal_picker.set_rgba_text(str(d["today_goal_bar_rgba"]))
+        self.today_goal_outline_picker.set_rgba_text(str(d["today_goal_outline_rgba"]))
 
 
     def get_new_conf(self) -> dict[str, Any]:
@@ -767,16 +880,16 @@ class ConfigDialog(QDialog):
         c["bar_min_px"] = int(self.bmin_spin.value())
         c["bar_max_px"] = int(self.bmax_spin.value())
 
-        c["bar_rgba"] = str(self.bar_rgba_le.text()).strip()
-        c["today_bar_rgba"] = str(self.today_rgba_le.text()).strip()
-        c["goal_line_rgba"] = str(self.goal_rgba_le.text()).strip()
-        c["tick_rgba"] = str(self.tick_rgba_le.text()).strip()
+        c["bar_rgba"] = self.bar_picker.rgba_text()
+        c["today_bar_rgba"] = self.today_picker.rgba_text()
+        c["goal_line_rgba"] = self.goal_line_picker.rgba_text()
+        c["tick_rgba"] = self.tick_picker.rgba_text()
 
-        c["goal_met_bar_rgba"] = str(self.goalmet_rgba_le.text()).strip()
-        c["goal_met_outline_rgba"] = str(self.goalmet_outline_rgba_le.text()).strip()
+        c["goal_met_bar_rgba"] = self.goalmet_picker.rgba_text()
+        c["goal_met_outline_rgba"] = self.goalmet_outline_picker.rgba_text()
 
-        c["today_goal_bar_rgba"] = str(self.today_goal_rgba_le.text()).strip()
-        c["today_goal_outline_rgba"] = str(self.today_goal_outline_rgba_le.text()).strip()
+        c["today_goal_bar_rgba"] = self.today_goal_picker.rgba_text()
+        c["today_goal_outline_rgba"] = self.today_goal_outline_picker.rgba_text()
 
         return c
 
