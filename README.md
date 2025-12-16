@@ -1,4 +1,4 @@
-# Bar Graph
+# Anki Bar Graph
 
 A lightweight Anki add-on that displays a **30-day review history bar graph** directly on the **Decks screen**.
 
